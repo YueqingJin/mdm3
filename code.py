@@ -96,8 +96,9 @@ if __name__ == "__main__":
 
 #then i rain this on terminal in order to get output otherwise wont really work
 #so on powershell put this .\.venv\Scripts\Activate.ps1
-# python run_nvidia.py
+# python code.py
 
 #and then yh you get four .tif files let me know if there is any problem in it but have run it working
 #quite well might have edited something after tho so pls let me know have a look yh
+
 # $env:NGC_API_KEY = "YOUR_KEY_HERE"  the your key here paste ur ngc api key
