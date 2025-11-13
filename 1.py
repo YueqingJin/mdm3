@@ -1,74 +1,145 @@
 #!/usr/bin/env python3
+
 from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
-import matplotlib.pyplot as plt
+
 
 from earth2studio.data import ARCO
 
-BOX = (-3.10, 54.80, -2.80, 55.05)   # W, S, E, N
-START, END = "2015-11-01 00:00", "2015-11-30 23:00"
-OUT = Path("outputs_rain")
 
-def dim_names(da):
-    lat = [d for d in da.dims if "lat" in d.lower()][0]
-    lon = [d for d in da.dims if "lon" in d.lower()][0]
-    return lat, lon
+bbox = (-3.10, 54.80, -2.80, 55.05)  
+start_time = "2014-01-01 00:00"
+end_time = "2015-12-31 23:00"
 
-def clip_box(da, box):
-    w, s, e, n = box
-    lat, lon = dim_names(da)
-    if da[lon].min() >= 0:  # 0..360 longitudes
-        if w < 0: w += 360
-        if e < 0: e += 360
-    sel_lat = slice(n, s) if da[lat][0] > da[lat][-1] else slice(s, n)
-    sel_lon = slice(w, e)
-    return da.sel({lat: sel_lat, lon: sel_lon})
+out_dir = Path("outputs_rain")
 
-def area_mean_mm_per_hour(tp_da):
-    lat, _ = dim_names(tp_da)
-    w = np.cos(np.deg2rad(tp_da[lat]))
-    w = w / w.mean()
-    mm = tp_da * 1000.0
-    return (mm * w).mean(dim=[d for d in mm.dims if d not in ["time"]])
 
-def make_plot(series, title, ylabel, outpath, kind="line"):
-    plt.figure(figsize=(12, 4))
-    if kind == "bar":
-        series.plot(kind="bar")
+def guess_latlon_names(arr):
+    
+    lat_dim = [d for d in arr.dims if "lat" in d.lower()]
+    lon_dim = [d for d in arr.dims if "lon" in d.lower()]
+    
+    return lat_dim[0], lon_dim[0]
+
+
+def cut_box(data, region):
+   
+
+    west, south, east, north = region
+    lat, lon = guess_latlon_names(data)
+
+    
+    if data[lon].min() >= 0:
+        if west < 0:
+            west += 360
+        if east < 0:
+            east += 360
+
+    if data[lat][0] > data[lat][-1]:
+        lat_slice = slice(north, south)
     else:
-        series.plot()
-    plt.title(title)
-    plt.ylabel(ylabel)
-    plt.xlabel("Time (UTC)" if kind == "line" else "Date (UTC)")
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=180)
-    plt.close()
+        lat_slice = slice(south, north)
+
+    lon_slice = slice(west, east)
+
+    return data.sel({lat: lat_slice, lon: lon_slice})
+
+
+def calc_area_avg_mm_hr(data_arr):
+   
+
+    lat_name, _ = guess_latlon_names(data_arr)
+
+    weights = np.cos(np.deg2rad(data_arr[lat_name]))
+    weights = weights / weights.mean()  # normalized it so the weights wont skew hopefully
+
+    rainfall_mm = data_arr * 1000.0  # m to mm
+
+    avg_dims = []
+    for dim in rainfall_mm.dims:
+        if dim != "time":
+            avg_dims.append(dim)
+
+    weighted_mean = (rainfall_mm * weights).mean(dim=avg_dims)
+
+    return weighted_mean
+
+
+def run_fcn_precip():
+    
+
+    from earth2studio.models.px import FCN
+    from earth2studio.models.dx import PrecipitationAFNO
+    from earth2studio.io import ZarrBackend
+    import earth2studio.run as runner
+
+    
+    input_data = ARCO()
+
+   
+    px_model = FCN.load_model(FCN.load_default_package())
+
+   
+    dx_model = PrecipitationAFNO.load_model(PrecipitationAFNO.load_default_package())
+
+    zarr_path = out_dir / "fcn_precip_2014_2015.zarr"
+    backend = ZarrBackend(file_name=str(zarr_path))
+
+    
+    nsteps = 3000
+
+    
+    backend = runner.diagnostic([start_time], nsteps, px_model, dx_model, input_data, backend)
+
+    ds = xr.open_zarr(zarr_path)
+
+    
+    precip_var = None
+    for var in ds.data_vars:
+        if "precip" in var.lower() or var in ("tp", "total_precipitation"):
+            precip_var = var
+            break
+
+    if not precip_var:
+        print("DEBUG: Dataset vars were:", list(ds.data_vars))  # just double checking idk not sure
+        raise RuntimeError("Rainfall variable not found in model output.")
+
+    
+    tp_6h = ds[precip_var].sel(time=slice(start_time, end_time))
+
+    # Convert from 6h totals to hourly rate 
+    tp_hourly = tp_6h / 6.0
+
+    # Crop to region of interest
+    tp_hourly_cropped = cut_box(tp_hourly, bbox)
+
+    return tp_hourly_cropped
+
 
 def main():
-    OUT.mkdir(parents=True, exist_ok=True)
-    times = pd.date_range(START, END, freq="1H").to_pydatetime().tolist()
+    if not out_dir.exists():
+        out_dir.mkdir(parents=True)
 
-    data = ARCO()
-    tp = data(times, "tp")              # ERA5 total precip (m per hour)
-    tp = clip_box(tp, BOX)
+    print(" Running FCN rainfall model chain...")
 
-    hourly = area_mean_mm_per_hour(tp).to_series()
-    hourly.name = "rain_mm_hourly"
+    rain_data = run_fcn_precip()
 
-    daily = hourly.resample("1D").sum()
-    daily.name = "rain_mm_daily"
+    hourly_rain = calc_area_avg_mm_hr(rain_data).to_series()
+    hourly_rain.name = "fcn_rain_mm_hourly"
 
-    hourly.to_csv(OUT / "rain_hourly_mm.csv", header=True)
-    daily.to_csv(OUT / "rain_daily_mm.csv", header=True)
+  
+    daily_rain = hourly_rain.resample("1D").sum()
+    daily_rain.name = "fcn_rain_mm_daily"
 
-    make_plot(hourly, "Carlisle — Hourly Rainfall (mm), Nov 2015", "mm",
-              OUT / "rain_hourly_mm.png", kind="line")
-    make_plot(daily, "Carlisle — Daily Rainfall (mm), Nov 2015", "mm",
-              OUT / "rain_daily_mm.png", kind="bar")
+    # Save results to CSV
+    out_csv = out_dir / "carlisle_daily_mean_rainfall_2014_2015.csv"
+    daily_rain.to_csv(out_csv, header=True)
 
-    print(f"Done → {OUT.resolve()}")
+    print(f" Done! Output written to: {out_csv.resolve()}")
+
 
 if __name__ == "__main__":
+    
     main()
