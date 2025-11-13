@@ -9,15 +9,14 @@ import gcsfs
 OUTPUT_CSV = "carlisle_daily_mean_mm_2014_2015.csv"
 TIME_START, TIME_END = "2014-01-01", "2015-12-31"
 
-# Carlisle bbox (North, West, South, East)
+
 NORTH, WEST, SOUTH, EAST = 55.05, -3.10, 54.80, -2.80
 
 # Public ARCO ERA5 (Google Cloud)
 ARCO_GCS = "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
 
-# ---------- helpers ----------
 def _open_zarr_gcs(url: str) -> xr.Dataset:
-    # Non-async to avoid Windows event-loop issues
+    
     fs = gcsfs.GCSFileSystem(token="anon", asynchronous=False)
     mapper = fs.get_mapper(url)
     return xr.open_zarr(mapper, consolidated=True)
@@ -61,17 +60,16 @@ def find_precip_var(ds: xr.Dataset) -> str:
                    f"\nAvailable vars (first 40): {list(ds.data_vars)[:40]}")
 
 def rain_mm_daily(tp: xr.DataArray) -> xr.DataArray:
-    # Convert m -> mm and sum per day
+    # Convert m to mm and sum per day
     return (tp * 1000.0).resample(time="1D").sum().rename("rain_mm_daily")
 
-# ---------- main ----------
 def run(save_path: str = OUTPUT_CSV) -> str:
     ds = _open_zarr_gcs(ARCO_GCS)
     ds = _normalise_coords(ds)
     precip_name = find_precip_var(ds)
     print(f"[INFO] Using precipitation variable: {precip_name}")
 
-    # Loop month-by-month to avoid timeouts
+ 
     out_written = False
     months = pd.period_range(TIME_START, TIME_END, freq="M")
 
@@ -87,7 +85,7 @@ def run(save_path: str = OUTPUT_CSV) -> str:
         df = daily_mean.to_pandas().to_frame("rain_mm_daily")
         df.index.name = "date"
 
-        # Append to CSV (header only once)
+       
         df.to_csv(save_path, mode="a", header=not out_written)
         out_written = True
         print(f"[OK] Wrote {len(df)} rows for {p.strftime('%Y-%m')}")
@@ -109,3 +107,4 @@ if __name__ == "__main__":
             file=sys.stderr
         )
         raise
+
