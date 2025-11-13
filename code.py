@@ -101,4 +101,5 @@ if __name__ == "__main__":
 #and then yh you get four .tif files let me know if there is any problem in it but have run it working
 #quite well might have edited something after tho so pls let me know have a look yh
 
-# $env:NGC_API_KEY = "YOUR_KEY_HERE"  the your key here paste ur ngc api key
+
+
